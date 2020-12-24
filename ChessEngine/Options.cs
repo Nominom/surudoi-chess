@@ -5,7 +5,15 @@ using System.Text;
 namespace ChessEngine
 {
 	public static class Options {
-		public static int HashSize { get; set; } = 32;
+		private static int hashSize = 32;
+
+		public static int HashSize {
+			get => hashSize;
+			set {
+				hashSize = value;
+			}
+		}
 		public static bool Ponder { get; set; } = false;
+		public static bool DebugMode { get; set; } = false;
 	}
 }

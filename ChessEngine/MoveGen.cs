@@ -16,38 +16,254 @@ namespace ChessEngine
 		public static ulong[] kingAttacks = MoveGenHelpers.GenerateKingAttacks();
 		public static ulong[] knightAttacks = MoveGenHelpers.GenerateKnightAttacks();
 
-		public static PooledList<Move> GeneratePseudoLegalMoves(in BitBoard board)
+		private struct PinnedMap
 		{
-			PooledList<Move> moves = PooledList<Move>.Create();
-
-			GeneratePawnAttacks(board, moves);
-			GeneratePawnPushes(board, moves);
-			GenerateKingMoves(board, moves);
-			GenerateKnightMoves(board, moves);
-			GenerateRookMoves(board, moves, (Piece)((int)Piece.WRook + (int)board.sideToMove));
-			GenerateBishopMoves(board, moves, (Piece)((int)Piece.WBishop + (int)board.sideToMove));
-			GenerateRookMoves(board, moves, (Piece)((int)Piece.WQueen + (int)board.sideToMove));
-			GenerateBishopMoves(board, moves, (Piece)((int)Piece.WQueen + (int)board.sideToMove));
-
-			return moves;
+			public ulong allPinned;
+			public ulong straightPinned;
+			public ulong diagonalPinned;
+			public ulong pinnedAllowedStraight;
+			public ulong pinnedAllowedDiagonal;
 		}
 
-		public static PooledList<Move> GenerateOnlyLegalMoves(ref BitBoard board)
+		private struct KingCheckState
 		{
-			PooledList<Move> moves = GeneratePseudoLegalMoves(board);
+			public ulong attackMap;
+			public ulong pushMap;
+			public int numAttackers;
+		}
 
-			for (int i = 0; i < moves.Count; i++)
+		public static int GeneratePseudoLegalMoves(in BitBoard board, Span<Move> moves)
+		{
+			int numMoves = 0;
+
+			KingCheckState checkState = new KingCheckState()
 			{
-				var unMove = board.MakeMove(moves[i]);
-				if (!unMove.wasLegal)
+				attackMap = ~0UL,
+				numAttackers = 0,
+				pushMap = ~0UL
+			};
+
+			PinnedMap pinned = default;
+
+			GeneratePawnAttacks(board, pinned, checkState, moves, ref numMoves);
+			GeneratePawnPushes(board, pinned, checkState, moves, ref numMoves);
+			GenerateKnightMoves(board, pinned, checkState, moves, ref numMoves);
+
+			int c = (int)board.sideToMove;
+			int oc = (c + 1) & 1;
+			int kingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing + oc]);
+
+			if ((board.pieces[(int)Piece.WQueen + c]) != 0)
+			{
+				ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+				ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+				GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions, moves, ref numMoves,
+					(Piece)((int)Piece.WRook + (int)board.sideToMove));
+				GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions, moves, ref numMoves,
+					(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+
+				GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions | diagonalSliderCheckPositions, moves, ref numMoves,
+					(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+				GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions | straightSliderCheckPositions, moves, ref numMoves,
+					(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+			}
+			else
+			{
+				if ((board.pieces[(int)Piece.WRook + c]) != 0)
 				{
-					moves.RemoveAt(i);
-					i--;
+					ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+					GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WRook + (int)board.sideToMove));
 				}
-				board.UnMakeMove(unMove);
+
+				if ((board.pieces[(int)Piece.WBishop + c]) != 0)
+				{
+					ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+					GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+				}
 			}
 
-			return moves;
+			GenerateKingMoves(board, moves, ref numMoves);
+			return numMoves;
+		}
+
+		public static int GenerateLegalMoves(in BitBoard board, Span<Move> moves)
+		{
+			int numMoves = 0;
+
+			KingCheckState checkState = GenerateKingCheckState(board);
+
+			if (checkState.numAttackers > 1)
+			{
+				GenerateKingMoves(board, moves, ref numMoves);
+			}
+			else
+			{
+				PinnedMap pinned = GeneratePinnedMap(board);
+
+				GeneratePawnAttacks(board, pinned, checkState, moves, ref numMoves);
+				GeneratePawnPushes(board, pinned, checkState, moves, ref numMoves);
+				GenerateKnightMoves(board, pinned, checkState, moves, ref numMoves);
+
+
+				int c = (int)board.sideToMove;
+				int oc = (c + 1) & 1;
+				int kingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing + oc]);
+
+				if ((board.pieces[(int)Piece.WQueen + c]) != 0)
+				{
+					ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+					ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+					GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WRook + (int)board.sideToMove));
+					GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+
+					GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions | diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+					GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions | straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+				}
+				else
+				{
+					if ((board.pieces[(int)Piece.WRook + c]) != 0)
+					{
+						ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+						GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions, moves, ref numMoves,
+							(Piece)((int)Piece.WRook + (int)board.sideToMove));
+					}
+
+					if ((board.pieces[(int)Piece.WBishop + c]) != 0)
+					{
+						ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+						GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions, moves, ref numMoves,
+							(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+					}
+				}
+
+				GenerateKingMoves(board, moves, ref numMoves);
+			}
+
+			return numMoves;
+		}
+
+		public static int GenerateQuiescentSearchMoves(in BitBoard board, Span<Move> moves)
+		{
+			int numMoves = 0;
+
+			KingCheckState checkState = GenerateKingCheckState(board);
+
+			if (checkState.numAttackers > 1)
+			{
+				GenerateKingMoves(board, moves, ref numMoves);
+			}
+			else if (checkState.numAttackers == 1)
+			{
+				PinnedMap pinned = GeneratePinnedMap(board);
+
+				GeneratePawnAttacks(board, pinned, checkState, moves, ref numMoves);
+				GeneratePawnPushes(board, pinned, checkState, moves, ref numMoves);
+				GenerateKnightMoves(board, pinned, checkState, moves, ref numMoves);
+
+				int c = (int)board.sideToMove;
+				int oc = (c + 1) & 1;
+				int kingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing + oc]);
+
+				if ((board.pieces[(int)Piece.WQueen + c]) != 0)
+				{
+					ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+					ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+					GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WRook + (int)board.sideToMove));
+					GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+
+					GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions | diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+					GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions | straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+				}
+				else
+				{
+					if ((board.pieces[(int)Piece.WRook + c]) != 0)
+					{
+						ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+						GenerateRookMoves(board, pinned, checkState, straightSliderCheckPositions, moves, ref numMoves,
+							(Piece)((int)Piece.WRook + (int)board.sideToMove));
+					}
+
+					if ((board.pieces[(int)Piece.WBishop + c]) != 0)
+					{
+						ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+						GenerateBishopMoves(board, pinned, checkState, diagonalSliderCheckPositions, moves, ref numMoves,
+							(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+					}
+				}
+
+				GenerateKingMoves(board, moves, ref numMoves);
+			}
+			else
+			{
+				PinnedMap pinned = GeneratePinnedMap(board);
+
+				GeneratePawnAttacks(board, pinned, checkState, moves, ref numMoves);
+				GeneratePawnPushChecksAndPromo(board, pinned, moves, ref numMoves);
+				GenerateKnightAttackAndChecks(board, pinned, moves, ref numMoves);
+
+				int c = (int)board.sideToMove;
+				int oc = (c + 1) & 1;
+				int kingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing + oc]);
+
+				if ((board.pieces[(int)Piece.WQueen + c]) != 0)
+				{
+					ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+					ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+					GenerateRookAttackAndChecks(board, pinned, straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WRook + (int)board.sideToMove));
+					GenerateBishopAttackAndChecks(board, pinned, diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+
+					GenerateRookAttackAndChecks(board, pinned, straightSliderCheckPositions | diagonalSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+					GenerateBishopAttackAndChecks(board, pinned, diagonalSliderCheckPositions | straightSliderCheckPositions, moves, ref numMoves,
+						(Piece)((int)Piece.WQueen + (int)board.sideToMove));
+				}
+				else
+				{
+					if ((board.pieces[(int)Piece.WRook + c]) != 0)
+					{
+						ulong straightSliderCheckPositions = Magic.RookAttacks(kingSquare, board.occupied);
+						GenerateRookAttackAndChecks(board, pinned, straightSliderCheckPositions, moves, ref numMoves,
+							(Piece)((int)Piece.WRook + (int)board.sideToMove));
+					}
+
+					if ((board.pieces[(int)Piece.WBishop + c]) != 0)
+					{
+						ulong diagonalSliderCheckPositions = Magic.BishopAttacks(kingSquare, board.occupied);
+						GenerateBishopAttackAndChecks(board, pinned, diagonalSliderCheckPositions, moves, ref numMoves,
+							(Piece)((int)Piece.WBishop + (int)board.sideToMove));
+					}
+				}
+
+
+			}
+
+			return numMoves;
+		}
+
+		public static List<Move> GenerateMoveList(in BitBoard board)
+		{
+			Span<Move> moves = stackalloc Move[218];
+			int numMoves = GenerateLegalMoves(board, moves);
+			List<Move> list = new List<Move>(20);
+
+			for (int i = 0; i < numMoves; i++)
+			{
+				list.Add(moves[i]);
+			}
+
+			return list;
 		}
 
 		public static (ulong, ulong, ulong) GenerateWhiteAttackMaps(in BitBoard board)
@@ -102,20 +318,22 @@ namespace ChessEngine
 				int sliderCount = BitOperations.PopCount(wsliders);
 				if (Avx2.IsSupported && sliderCount > sliderCountForAvx)
 				{
+					ulong emptyMask = board.empty | board.pieces[(int)Piece.BKing];
 					wAttacks |= Avx2Dumb7FillAttacks(board.pieces[(int)Piece.WQueen],
 						board.pieces[(int)Piece.WRook],
-						board.pieces[(int)Piece.WBishop], board.empty);
+						board.pieces[(int)Piece.WBishop], emptyMask);
 
 				}
 				else
 				{
 					var rooks = board.pieces[(int)Piece.WRook] | board.pieces[(int)Piece.WQueen];
+					ulong occupiedMask = board.occupied ^ board.pieces[(int)Piece.BKing];
 					while (rooks != 0)
 					{
 						SquareIndex rookSquare = BitOperations.TrailingZeroCount(rooks);
 						ulong rookMask = rookSquare.ToMask();
 						rooks ^= rookMask;
-						var rookAttackPattern = Magic.RookAttacks(rookSquare, board.occupied);
+						var rookAttackPattern = Magic.RookAttacks(rookSquare, occupiedMask);
 						wAttacks |= rookAttackPattern;
 					}
 
@@ -125,7 +343,7 @@ namespace ChessEngine
 						SquareIndex bishopSquare = BitOperations.TrailingZeroCount(bishops);
 						ulong bishopMask = bishopSquare.ToMask();
 						bishops ^= bishopMask;
-						var bishopAttackPattern = Magic.BishopAttacks(bishopSquare, board.occupied);
+						var bishopAttackPattern = Magic.BishopAttacks(bishopSquare, occupiedMask);
 						wAttacks |= bishopAttackPattern;
 					}
 				}
@@ -186,20 +404,22 @@ namespace ChessEngine
 				int sliderCount = BitOperations.PopCount(bsliders);
 				if (Avx2.IsSupported && sliderCount > sliderCountForAvx)
 				{
+					ulong emptyMask = board.empty | board.pieces[(int)Piece.WKing];
 
 					bAttacks |= Avx2Dumb7FillAttacks(board.pieces[(int)Piece.BQueen],
 						board.pieces[(int)Piece.BRook],
-						board.pieces[(int)Piece.BBishop], board.empty);
+						board.pieces[(int)Piece.BBishop], emptyMask);
 				}
 				else
 				{
+					ulong occupiedMask = board.occupied ^ board.pieces[(int)Piece.WKing];
 					var rooks = board.pieces[(int)Piece.BRook] | board.pieces[(int)Piece.BQueen];
 					while (rooks != 0)
 					{
 						SquareIndex rookSquare = BitOperations.TrailingZeroCount(rooks);
 						ulong rookMask = rookSquare.ToMask();
 						rooks ^= rookMask;
-						var rookAttackPattern = Magic.RookAttacks(rookSquare, board.occupied);
+						var rookAttackPattern = Magic.RookAttacks(rookSquare, occupiedMask);
 						bAttacks |= rookAttackPattern;
 					}
 
@@ -209,7 +429,7 @@ namespace ChessEngine
 						SquareIndex bishopSquare = BitOperations.TrailingZeroCount(bishops);
 						ulong bishopMask = bishopSquare.ToMask();
 						bishops ^= bishopMask;
-						var bishopAttackPattern = Magic.BishopAttacks(bishopSquare, board.occupied);
+						var bishopAttackPattern = Magic.BishopAttacks(bishopSquare, occupiedMask);
 						bAttacks |= bishopAttackPattern;
 					}
 				}
@@ -304,96 +524,275 @@ namespace ChessEngine
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
-		private static void GeneratePawnPushes(in BitBoard board, PooledList<Move> moves)
+		private static void GeneratePawnPushes(in BitBoard board, PinnedMap pinned, KingCheckState checkState, Span<Move> moves, ref int numMoves)
 		{
 
 			if (board.sideToMove == Color.White)
 			{
 
-				var wPawns = board.pieces[(int)Piece.WPawn];
+				var wPawns = board.pieces[(int)Piece.WPawn] & ~pinned.diagonalPinned;
+				var bKing = board.pieces[(int)Piece.BKing];
+
+				var pawnCheck1pushStartPositions = MoveGenHelpers.soSoEa(bKing) | MoveGenHelpers.soSoWe(bKing);
+
 
 				var wPawns1Push = MoveGenHelpers.wPawnsAble2Push(wPawns, board.empty);
 
 				while (wPawns1Push > 0)
 				{
 					SquareIndex nextIndex = BitOperations.TrailingZeroCount(wPawns1Push);
-					wPawns1Push ^= nextIndex.ToMask();
+					ulong startMask = nextIndex.ToMask();
+					wPawns1Push ^= startMask;
 
 					SquareIndex endPos = nextIndex.OneNorth();
 					ulong endMask = endPos.ToMask();
 
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.pushMap) == 0)
+					{
+						continue;
+					}
+
 					if (endMask.Any(MoveGenHelpers.Ranks[7]))
 					{
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WQueen));
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WRook));
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WBishop));
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WKnight));
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WQueen);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WRook);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WBishop);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WKnight);
 					}
 					else
 					{
-						Move m = Move.CreateQuiet(nextIndex, endPos, Piece.WPawn);
-						moves.Add(m);
+						bool isCheck = (startMask & pawnCheck1pushStartPositions) != 0;
+						Move m = Move.CreateQuiet(nextIndex, endPos, Piece.WPawn, isCheck);
+						moves[numMoves++] = m;
 					}
 				}
 
+				var pawnCheck2pushStartPositions = MoveGenHelpers.SouthOne(pawnCheck1pushStartPositions);
 
 				var wPawns2Push = MoveGenHelpers.wPawnsAble2DblPush(wPawns, board.empty);
 				while (wPawns2Push > 0)
 				{
 					SquareIndex nextIndex = BitOperations.TrailingZeroCount(wPawns2Push);
-					wPawns2Push ^= nextIndex.ToMask();
+					ulong startMask = nextIndex.ToMask();
+					wPawns2Push ^= startMask;
 
 					SquareIndex endPos = nextIndex.TwoNorth();
+					ulong endMask = endPos.ToMask();
 
-					Move m = Move.CreatePawnDouble(nextIndex, endPos, Piece.WPawn);
-					moves.Add(m);
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.pushMap) == 0)
+					{
+						continue;
+					}
+
+					bool isCheck = (startMask & pawnCheck2pushStartPositions) != 0;
+
+					Move m = Move.CreatePawnDouble(nextIndex, endPos, Piece.WPawn, isCheck);
+					moves[numMoves++] = m;
 				}
 			}
 			else
 			{
-				var bPawns = board.pieces[(int)Piece.BPawn];
+				var bPawns = board.pieces[(int)Piece.BPawn] & ~pinned.diagonalPinned;
+				var wKing = board.pieces[(int)Piece.WKing];
+				var pawnCheck1pushStartPositions = MoveGenHelpers.noNoEa(wKing) | MoveGenHelpers.noNoWe(wKing);
 
 				var bPawns1Push = MoveGenHelpers.bPawnsAble2Push(bPawns, board.empty);
 
 				while (bPawns1Push > 0)
 				{
 					SquareIndex nextIndex = BitOperations.TrailingZeroCount(bPawns1Push);
-					bPawns1Push ^= nextIndex.ToMask();
+					ulong startMask = nextIndex.ToMask();
+					bPawns1Push ^= startMask;
 
 					SquareIndex endPos = nextIndex.OneSouth();
 					ulong endMask = endPos.ToMask();
 
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.pushMap) == 0)
+					{
+						continue;
+					}
+
 					if (endMask.Any(MoveGenHelpers.Ranks[0]))
 					{
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BQueen));
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BRook));
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BBishop));
-						moves.Add(Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BKnight));
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BQueen);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BRook);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BBishop);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BKnight);
 					}
 					else
 					{
-						Move m = Move.CreateQuiet(nextIndex, endPos, Piece.BPawn);
-						moves.Add(m);
+						bool isCheck = (startMask & pawnCheck1pushStartPositions) != 0;
+						Move m = Move.CreateQuiet(nextIndex, endPos, Piece.BPawn, isCheck);
+						moves[numMoves++] = m;
 					}
 				}
 
+				var pawnCheck2pushStartPositions = MoveGenHelpers.NorthOne(pawnCheck1pushStartPositions);
 
 				var bPawns2Push = MoveGenHelpers.bPawnsAble2DblPush(bPawns, board.empty);
 				while (bPawns2Push > 0)
 				{
 					SquareIndex nextIndex = BitOperations.TrailingZeroCount(bPawns2Push);
-					bPawns2Push ^= nextIndex.ToMask();
+					ulong startMask = nextIndex.ToMask();
+					bPawns2Push ^= startMask;
 
 					SquareIndex endPos = nextIndex.TwoSouth();
+					ulong endMask = endPos.ToMask();
 
-					Move m = Move.CreatePawnDouble(nextIndex, endPos, Piece.BPawn);
-					moves.Add(m);
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.pushMap) == 0)
+					{
+						continue;
+					}
+
+					bool isCheck = (startMask & pawnCheck2pushStartPositions) != 0;
+
+					Move m = Move.CreatePawnDouble(nextIndex, endPos, Piece.BPawn, isCheck);
+					moves[numMoves++] = m;
 				}
 			}
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
-		private static void GeneratePawnAttacks(in BitBoard board, PooledList<Move> moves)
+		private static void GeneratePawnPushChecksAndPromo(in BitBoard board, PinnedMap pinned, Span<Move> moves, ref int numMoves)
+		{
+
+			if (board.sideToMove == Color.White)
+			{
+
+				var wPawns = board.pieces[(int)Piece.WPawn] & ~pinned.diagonalPinned;
+				var bKing = board.pieces[(int)Piece.BKing];
+
+				var pawnCheck1pushStartPositions = MoveGenHelpers.soSoEa(bKing) | MoveGenHelpers.soSoWe(bKing)
+																				| MoveGenHelpers.Ranks[6];
+
+				var wPawns1Push = MoveGenHelpers.wPawnsAble2Push(wPawns, board.empty) & pawnCheck1pushStartPositions;
+
+				while (wPawns1Push > 0)
+				{
+					SquareIndex nextIndex = BitOperations.TrailingZeroCount(wPawns1Push);
+					ulong startMask = nextIndex.ToMask();
+					wPawns1Push ^= startMask;
+
+					SquareIndex endPos = nextIndex.OneNorth();
+					ulong endMask = endPos.ToMask();
+
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					if (endMask.Any(MoveGenHelpers.Ranks[7]))
+					{
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WQueen);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.WPawn, Piece.WKnight);
+					}
+					else
+					{
+						Move m = Move.CreateQuiet(nextIndex, endPos, Piece.WPawn, true);
+						moves[numMoves++] = m;
+					}
+				}
+
+				var pawnCheck2pushStartPositions = MoveGenHelpers.SouthOne(pawnCheck1pushStartPositions);
+
+				var wPawns2Push = MoveGenHelpers.wPawnsAble2DblPush(wPawns, board.empty) & pawnCheck2pushStartPositions;
+				while (wPawns2Push > 0)
+				{
+					SquareIndex nextIndex = BitOperations.TrailingZeroCount(wPawns2Push);
+					ulong startMask = nextIndex.ToMask();
+					wPawns2Push ^= startMask;
+
+					SquareIndex endPos = nextIndex.TwoNorth();
+					ulong endMask = endPos.ToMask();
+
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					Move m = Move.CreatePawnDouble(nextIndex, endPos, Piece.WPawn, true);
+					moves[numMoves++] = m;
+				}
+			}
+			else
+			{
+				var bPawns = board.pieces[(int)Piece.BPawn] & ~pinned.diagonalPinned;
+				var wKing = board.pieces[(int)Piece.WKing];
+				var pawnCheck1pushStartPositions = MoveGenHelpers.noNoEa(wKing) | MoveGenHelpers.noNoWe(wKing)
+																				| MoveGenHelpers.Ranks[1];
+				var bPawns1Push = MoveGenHelpers.bPawnsAble2Push(bPawns, board.empty) & pawnCheck1pushStartPositions;
+
+				while (bPawns1Push > 0)
+				{
+					SquareIndex nextIndex = BitOperations.TrailingZeroCount(bPawns1Push);
+					ulong startMask = nextIndex.ToMask();
+					bPawns1Push ^= startMask;
+
+					SquareIndex endPos = nextIndex.OneSouth();
+					ulong endMask = endPos.ToMask();
+
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					if (endMask.Any(MoveGenHelpers.Ranks[0]))
+					{
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BQueen);
+						moves[numMoves++] = Move.CreatePromotion(nextIndex, endPos, Piece.BPawn, Piece.BKnight);
+					}
+					else
+					{
+						Move m = Move.CreateQuiet(nextIndex, endPos, Piece.BPawn, true);
+						moves[numMoves++] = m;
+					}
+				}
+
+				var pawnCheck2pushStartPositions = MoveGenHelpers.NorthOne(pawnCheck1pushStartPositions);
+
+				var bPawns2Push = MoveGenHelpers.bPawnsAble2DblPush(bPawns, board.empty) & pawnCheck2pushStartPositions;
+				while (bPawns2Push > 0)
+				{
+					SquareIndex nextIndex = BitOperations.TrailingZeroCount(bPawns2Push);
+					ulong startMask = nextIndex.ToMask();
+					bPawns2Push ^= startMask;
+
+					SquareIndex endPos = nextIndex.TwoSouth();
+					ulong endMask = endPos.ToMask();
+
+					if ((startMask & pinned.straightPinned) != 0 && (endMask & pinned.pinnedAllowedStraight) == 0)
+					{
+						continue;
+					}
+
+					Move m = Move.CreatePawnDouble(nextIndex, endPos, Piece.BPawn, true);
+					moves[numMoves++] = m;
+				}
+			}
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
+		private static void GeneratePawnAttacks(in BitBoard board, PinnedMap pinned, KingCheckState checkState, Span<Move> moves, ref int numMoves)
 		{
 
 			if (!board.enPassantTargetSquare.IsNoneSquare)
@@ -402,42 +801,83 @@ namespace ChessEngine
 
 				if (board.sideToMove == Color.White)
 				{
-					var wPawns = board.pieces[(int)Piece.WPawn];
-					var wPawnAbleToWest = MoveGenHelpers.wPawnsAble2CaptureWest(wPawns, enPassantMask);
-					if (wPawnAbleToWest != 0)
+					var wPawns = board.pieces[(int)Piece.WPawn] & ~pinned.straightPinned;
+					var wPawnAbleToEnPassant = MoveGenHelpers.wPawnsAble2CaptureAny(wPawns, enPassantMask);
+					var bKing = board.pieces[(int)Piece.BKing];
+
+					var pawnCheckEndPositions = MoveGenHelpers.SoEaOne(bKing) | MoveGenHelpers.SoWeOne(bKing);
+
+					while (wPawnAbleToEnPassant != 0)
 					{
-						var startIdx = BitOperations.TrailingZeroCount(wPawnAbleToWest);
-						moves.Add(Move.CreateEnPassant(startIdx, board.enPassantTargetSquare, Piece.WPawn, Piece.BPawn));
-					}
-					var wPawnAbleToEast = MoveGenHelpers.wPawnsAble2CaptureEast(wPawns, enPassantMask);
-					if (wPawnAbleToEast != 0)
-					{
-						var startIdx = BitOperations.TrailingZeroCount(wPawnAbleToEast);
-						moves.Add(Move.CreateEnPassant(startIdx, board.enPassantTargetSquare, Piece.WPawn, Piece.BPawn));
+						SquareIndex startIdx = BitOperations.TrailingZeroCount(wPawnAbleToEnPassant);
+						var startMask = startIdx.ToMask();
+						wPawnAbleToEnPassant ^= startMask;
+						var endIdx = board.enPassantTargetSquare;
+						var endMask = enPassantMask;
+						var captureIdx = new SquareIndex(startIdx.Rank, endIdx.File);
+						var captureMask = captureIdx.ToMask();
+
+						bool isCheck = (endMask & pawnCheckEndPositions) != 0;
+
+						if (!((startMask & pinned.diagonalPinned) != 0 &&
+							  (endMask & pinned.pinnedAllowedDiagonal) == 0))
+						{
+							if ((captureMask & checkState.attackMap) != 0 ||
+								(endMask & checkState.pushMap) != 0)
+							{
+								if (CheckEnPassantNotDiscoverCheck(board, startIdx, captureIdx))
+								{
+									moves[numMoves++] = Move.CreateEnPassant(startIdx, board.enPassantTargetSquare,
+										Piece.WPawn, Piece.BPawn, isCheck);
+								}
+							}
+						}
 					}
 				}
 				else
 				{
-					var bPawns = board.pieces[(int)Piece.BPawn];
-					var bPawnAbleToWest = MoveGenHelpers.bPawnsAble2CaptureWest(bPawns, enPassantMask);
-					if (bPawnAbleToWest != 0)
+					var bPawns = board.pieces[(int)Piece.BPawn] & ~pinned.straightPinned;
+					var bPawnAbleToEnPassant = MoveGenHelpers.bPawnsAble2CaptureAny(bPawns, enPassantMask);
+					var wKing = board.pieces[(int)Piece.WKing];
+
+					var pawnCheckEndPositions = MoveGenHelpers.NoEaOne(wKing) | MoveGenHelpers.NoWeOne(wKing);
+
+					while (bPawnAbleToEnPassant != 0)
 					{
-						var startIdx = BitOperations.TrailingZeroCount(bPawnAbleToWest);
-						moves.Add(Move.CreateEnPassant(startIdx, board.enPassantTargetSquare, Piece.BPawn, Piece.WPawn));
-					}
-					var bPawnAbleToEast = MoveGenHelpers.bPawnsAble2CaptureEast(bPawns, enPassantMask);
-					if (bPawnAbleToEast != 0)
-					{
-						var startIdx = BitOperations.TrailingZeroCount(bPawnAbleToEast);
-						moves.Add(Move.CreateEnPassant(startIdx, board.enPassantTargetSquare, Piece.BPawn, Piece.WPawn));
+						SquareIndex startIdx = BitOperations.TrailingZeroCount(bPawnAbleToEnPassant);
+						var startMask = startIdx.ToMask();
+						bPawnAbleToEnPassant ^= startMask;
+						var endIdx = board.enPassantTargetSquare;
+						var endMask = enPassantMask;
+						var captureIdx = new SquareIndex(startIdx.Rank, endIdx.File);
+						var captureMask = captureIdx.ToMask();
+
+						bool isCheck = (endMask & pawnCheckEndPositions) != 0;
+
+						if (!((startMask & pinned.diagonalPinned) != 0 &&
+							  (endMask & pinned.pinnedAllowedDiagonal) == 0))
+						{
+							if ((captureMask & checkState.attackMap) != 0 ||
+								(endMask & checkState.pushMap) != 0)
+							{
+								if (CheckEnPassantNotDiscoverCheck(board, startIdx, captureIdx))
+								{
+									moves[numMoves++] = Move.CreateEnPassant(startIdx, board.enPassantTargetSquare,
+										Piece.BPawn, Piece.WPawn, isCheck);
+								}
+							}
+						}
 					}
 				}
 			}
 
 			if (board.sideToMove == Color.White)
 			{
-				var wPawns = board.pieces[(int)Piece.WPawn];
+				var wPawns = board.pieces[(int)Piece.WPawn] & ~pinned.straightPinned;
 				var bPieces = board.pieces[(int)Piece.BlackAll];
+				var bKing = board.pieces[(int)Piece.BKing];
+
+				var pawnCheckEndPositions = MoveGenHelpers.SoEaOne(bKing) | MoveGenHelpers.SoWeOne(bKing);
 
 				var wPawnsAbleToWest = MoveGenHelpers.wPawnsAble2CaptureWest(wPawns, bPieces);
 
@@ -450,19 +890,30 @@ namespace ChessEngine
 					ulong endMask = MoveGenHelpers.NoWeOne(startMask);
 					SquareIndex endIndex = BitOperations.TrailingZeroCount(endMask);
 
+					if ((startMask & pinned.diagonalPinned) != 0 && (endMask & pinned.pinnedAllowedDiagonal) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.attackMap) == 0)
+					{
+						continue;
+					}
+
 					Piece capPiece = board.mailbox[endIndex];
 
 					if (endMask.Any(MoveGenHelpers.Ranks[7]))
 					{
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WQueen, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WRook, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WBishop, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WKnight, true, capPiece));
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WQueen, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WRook, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WBishop, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WKnight, false, true, capPiece);
 					}
 					else
 					{
-						Move move = Move.CreateCapture(startIndex, endIndex, Piece.WPawn, capPiece);
-						moves.Add(move);
+						bool isCheck = (endMask & pawnCheckEndPositions) != 0;
+						Move move = Move.CreateCapture(startIndex, endIndex, Piece.WPawn, capPiece, isCheck);
+						moves[numMoves++] = move;
 					}
 				}
 
@@ -477,26 +928,42 @@ namespace ChessEngine
 					ulong endMask = MoveGenHelpers.NoEaOne(startMask);
 					SquareIndex endIndex = BitOperations.TrailingZeroCount(endMask);
 
+					if ((startMask & pinned.diagonalPinned) != 0 && (endMask & pinned.pinnedAllowedDiagonal) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.attackMap) == 0)
+					{
+						continue;
+					}
+
+
+
 					Piece capPiece = board.mailbox[endIndex];
 
 					if (endMask.Any(MoveGenHelpers.Ranks[7]))
 					{
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WQueen, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WRook, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WBishop, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WKnight, true, capPiece));
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WQueen, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WRook, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WBishop, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.WPawn, Piece.WKnight, false, true, capPiece);
 					}
 					else
 					{
-						Move move = Move.CreateCapture(startIndex, endIndex, Piece.WPawn, capPiece);
-						moves.Add(move);
+						bool isCheck = (endMask & pawnCheckEndPositions) != 0;
+						Move move = Move.CreateCapture(startIndex, endIndex, Piece.WPawn, capPiece, isCheck);
+						moves[numMoves++] = move;
 					}
 				}
 			}
 			else
 			{
-				var bPawns = board.pieces[(int)Piece.BPawn];
+				var bPawns = board.pieces[(int)Piece.BPawn] & ~pinned.straightPinned;
 				var wPieces = board.pieces[(int)Piece.WhiteAll];
+				var wKing = board.pieces[(int)Piece.WKing];
+
+				var pawnCheckEndPositions = MoveGenHelpers.NoEaOne(wKing) | MoveGenHelpers.NoWeOne(wKing);
 
 				var bPawnsAbleToWest = MoveGenHelpers.bPawnsAble2CaptureWest(bPawns, wPieces);
 
@@ -509,19 +976,30 @@ namespace ChessEngine
 					ulong endMask = MoveGenHelpers.SoWeOne(startMask);
 					SquareIndex endIndex = BitOperations.TrailingZeroCount(endMask);
 
+					if ((startMask & pinned.diagonalPinned) != 0 && (endMask & pinned.pinnedAllowedDiagonal) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.attackMap) == 0)
+					{
+						continue;
+					}
+
 					Piece capPiece = board.mailbox[endIndex];
 
 					if (endMask.Any(MoveGenHelpers.Ranks[0]))
 					{
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BQueen, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BRook, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BBishop, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BKnight, true, capPiece));
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BQueen, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BRook, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BBishop, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BKnight, false, true, capPiece);
 					}
 					else
 					{
-						Move move = Move.CreateCapture(startIndex, endIndex, Piece.BPawn, capPiece);
-						moves.Add(move);
+						bool isCheck = (endMask & pawnCheckEndPositions) != 0;
+						Move move = Move.CreateCapture(startIndex, endIndex, Piece.BPawn, capPiece, isCheck);
+						moves[numMoves++] = move;
 					}
 				}
 
@@ -536,26 +1014,39 @@ namespace ChessEngine
 					ulong endMask = MoveGenHelpers.SoEaOne(startMask);
 					SquareIndex endIndex = BitOperations.TrailingZeroCount(endMask);
 
+					if ((startMask & pinned.diagonalPinned) != 0 && (endMask & pinned.pinnedAllowedDiagonal) == 0)
+					{
+						continue;
+					}
+
+					if ((endMask & checkState.attackMap) == 0)
+					{
+						continue;
+					}
+
+
+
 					Piece capPiece = board.mailbox[endIndex];
 
 					if (endMask.Any(MoveGenHelpers.Ranks[0]))
 					{
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BQueen, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BRook, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BBishop, true, capPiece));
-						moves.Add(Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BKnight, true, capPiece));
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BQueen, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BRook, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BBishop, false, true, capPiece);
+						moves[numMoves++] = Move.CreatePromotion(startIndex, endIndex, Piece.BPawn, Piece.BKnight, false, true, capPiece);
 					}
 					else
 					{
-						Move move = Move.CreateCapture(startIndex, endIndex, Piece.BPawn, capPiece);
-						moves.Add(move);
+						bool isCheck = (endMask & pawnCheckEndPositions) != 0;
+						Move move = Move.CreateCapture(startIndex, endIndex, Piece.BPawn, capPiece, isCheck);
+						moves[numMoves++] = move;
 					}
 				}
 			}
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
-		private static void GenerateKingMoves(in BitBoard board, PooledList<Move> moves)
+		private static void GenerateKingMoves(in BitBoard board, Span<Move> moves, ref int numMoves)
 		{
 			if (board.sideToMove == Color.White)
 			{
@@ -575,26 +1066,30 @@ namespace ChessEngine
 					if (capPiece != Piece.Empty)
 					{
 						Move m = Move.CreateCapture(kingSquare, endIndex, Piece.WKing, capPiece);
-						moves.Add(m);
+						moves[numMoves++] = m;
 					}
 					else
 					{
 						Move m = Move.CreateQuiet(kingSquare, endIndex, Piece.WKing);
-						moves.Add(m);
+						moves[numMoves++] = m;
 					}
 				}
 
-				if (board.wKingSideAllowed &&
-					(MoveGenHelpers.wCastleKingSideOccupiedMask & board.occupied) == 0 &&
-					(MoveGenHelpers.wCastleKingSideAttackMask & board.bAttacks) == 0)
+				if (!board.isKingInCheck)
 				{
-					moves.Add(Move.CreateCastle(false, Color.White));
-				}
-				if (board.wQueenSideAllowed &&
-					(MoveGenHelpers.wCastleQueenSideOccupiedMask & board.occupied) == 0 &&
-					(MoveGenHelpers.wCastleQueenSideAttackMask & board.bAttacks) == 0)
-				{
-					moves.Add(Move.CreateCastle(true, Color.White));
+					if ((board.castling & BitBoard.wKingSideCastling) != 0 &&
+						(MoveGenHelpers.wCastleKingSideOccupiedMask & board.occupied) == 0 &&
+						(MoveGenHelpers.wCastleKingSideAttackMask & board.bAttacks) == 0)
+					{
+						moves[numMoves++] = Move.CreateCastle(false, Color.White);
+					}
+
+					if ((board.castling & BitBoard.wQueenSideCastling) != 0 &&
+						(MoveGenHelpers.wCastleQueenSideOccupiedMask & board.occupied) == 0 &&
+						(MoveGenHelpers.wCastleQueenSideAttackMask & board.bAttacks) == 0)
+					{
+						moves[numMoves++] = Move.CreateCastle(true, Color.White);
+					}
 				}
 			}
 			else
@@ -615,36 +1110,42 @@ namespace ChessEngine
 					if (capPiece != Piece.Empty)
 					{
 						Move m = Move.CreateCapture(kingSquare, endIndex, Piece.BKing, capPiece);
-						moves.Add(m);
+						moves[numMoves++] = m;
 					}
 					else
 					{
 						Move m = Move.CreateQuiet(kingSquare, endIndex, Piece.BKing);
-						moves.Add(m);
+						moves[numMoves++] = m;
 					}
 				}
 
-				if (board.bKingSideAllowed &&
-					(MoveGenHelpers.bCastleKingSideOccupiedMask & board.occupied) == 0 &&
-					(MoveGenHelpers.bCastleKingSideAttackMask & board.wAttacks) == 0)
+				if (!board.isKingInCheck)
 				{
-					moves.Add(Move.CreateCastle(false, Color.Black));
-				}
-				if (board.bQueenSideAllowed &&
-					(MoveGenHelpers.bCastleQueenSideOccupiedMask & board.occupied) == 0 &&
-					(MoveGenHelpers.bCastleQueenSideAttackMask & board.wAttacks) == 0)
-				{
-					moves.Add(Move.CreateCastle(true, Color.Black));
+					if ((board.castling & BitBoard.bKingSideCastling) != 0 &&
+						(MoveGenHelpers.bCastleKingSideOccupiedMask & board.occupied) == 0 &&
+						(MoveGenHelpers.bCastleKingSideAttackMask & board.wAttacks) == 0)
+					{
+						moves[numMoves++] = Move.CreateCastle(false, Color.Black);
+					}
+
+					if ((board.castling & BitBoard.bQueenSideCastling) != 0 &&
+						(MoveGenHelpers.bCastleQueenSideOccupiedMask & board.occupied) == 0 &&
+						(MoveGenHelpers.bCastleQueenSideAttackMask & board.wAttacks) == 0)
+					{
+						moves[numMoves++] = Move.CreateCastle(true, Color.Black);
+					}
 				}
 			}
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
-		private static void GenerateKnightMoves(in BitBoard board, PooledList<Move> moves)
+		private static void GenerateKnightMoves(in BitBoard board, PinnedMap pinned, KingCheckState checkState, Span<Move> moves, ref int numMoves)
 		{
 			if (board.sideToMove == Color.White)
 			{
-				var knights = board.pieces[(int)Piece.WKnight];
+				var knights = board.pieces[(int)Piece.WKnight] & ~pinned.allPinned;
+				var bKingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.BKing]);
+				var checkPositions = knightAttacks[bKingSquare];
 
 				while (knights != 0)
 				{
@@ -654,22 +1155,26 @@ namespace ChessEngine
 
 					var knightAttackPattern = knightAttacks[knightSquare] & ~board.pieces[(int)Piece.WhiteAll];
 
+					knightAttackPattern &= checkState.attackMap | checkState.pushMap;
+
 					while (knightAttackPattern != 0)
 					{
 						SquareIndex endIndex = BitOperations.TrailingZeroCount(knightAttackPattern);
 						ulong endMask = endIndex.ToMask();
 						knightAttackPattern ^= endMask;
 
+						bool isCheck = (endMask & checkPositions) != 0;
+
 						var capPiece = board.mailbox[endIndex];
 						if (capPiece != Piece.Empty)
 						{
-							Move m = Move.CreateCapture(knightSquare, endIndex, Piece.WKnight, capPiece);
-							moves.Add(m);
+							Move m = Move.CreateCapture(knightSquare, endIndex, Piece.WKnight, capPiece, isCheck);
+							moves[numMoves++] = m;
 						}
 						else
 						{
-							Move m = Move.CreateQuiet(knightSquare, endIndex, Piece.WKnight);
-							moves.Add(m);
+							Move m = Move.CreateQuiet(knightSquare, endIndex, Piece.WKnight, isCheck);
+							moves[numMoves++] = m;
 						}
 					}
 				}
@@ -677,7 +1182,9 @@ namespace ChessEngine
 			}
 			else
 			{
-				var knights = board.pieces[(int)Piece.BKnight];
+				var knights = board.pieces[(int)Piece.BKnight] & ~pinned.allPinned;
+				var wKingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing]);
+				var checkPositions = knightAttacks[wKingSquare];
 
 				while (knights != 0)
 				{
@@ -687,22 +1194,26 @@ namespace ChessEngine
 
 					var knightAttackPattern = knightAttacks[knightSquare] & ~board.pieces[(int)Piece.BlackAll];
 
+					knightAttackPattern &= checkState.attackMap | checkState.pushMap;
+
 					while (knightAttackPattern != 0)
 					{
 						SquareIndex endIndex = BitOperations.TrailingZeroCount(knightAttackPattern);
 						ulong endMask = endIndex.ToMask();
 						knightAttackPattern ^= endMask;
 
+						bool isCheck = (endMask & checkPositions) != 0;
+
 						var capPiece = board.mailbox[endIndex];
 						if (capPiece != Piece.Empty)
 						{
-							Move m = Move.CreateCapture(knightSquare, endIndex, Piece.BKnight, capPiece);
-							moves.Add(m);
+							Move m = Move.CreateCapture(knightSquare, endIndex, Piece.BKnight, capPiece, isCheck);
+							moves[numMoves++] = m;
 						}
 						else
 						{
-							Move m = Move.CreateQuiet(knightSquare, endIndex, Piece.BKnight);
-							moves.Add(m);
+							Move m = Move.CreateQuiet(knightSquare, endIndex, Piece.BKnight, isCheck);
+							moves[numMoves++] = m;
 						}
 					}
 				}
@@ -710,13 +1221,95 @@ namespace ChessEngine
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
-		private static void GenerateRookMoves(in BitBoard board, PooledList<Move> moves, Piece piece)
+		private static void GenerateKnightAttackAndChecks(in BitBoard board, PinnedMap pinned, Span<Move> moves, ref int numMoves)
+		{
+			if (board.sideToMove == Color.White)
+			{
+				var knights = board.pieces[(int)Piece.WKnight] & ~pinned.allPinned;
+				var bKingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.BKing]);
+				var checkPositions = knightAttacks[bKingSquare];
+
+				while (knights != 0)
+				{
+					SquareIndex knightSquare = BitOperations.TrailingZeroCount(knights);
+					ulong knightMask = knightSquare.ToMask();
+					knights ^= knightMask;
+
+					var knightAttackPattern = knightAttacks[knightSquare] & ~board.pieces[(int)Piece.WhiteAll];
+
+					knightAttackPattern &= board.pieces[(int)Piece.BlackAll] | checkPositions;
+
+					while (knightAttackPattern != 0)
+					{
+						SquareIndex endIndex = BitOperations.TrailingZeroCount(knightAttackPattern);
+						ulong endMask = endIndex.ToMask();
+						knightAttackPattern ^= endMask;
+
+						bool isCheck = (endMask & checkPositions) != 0;
+
+						var capPiece = board.mailbox[endIndex];
+						if (capPiece != Piece.Empty)
+						{
+							Move m = Move.CreateCapture(knightSquare, endIndex, Piece.WKnight, capPiece, isCheck);
+							moves[numMoves++] = m;
+						}
+						else
+						{
+							Move m = Move.CreateQuiet(knightSquare, endIndex, Piece.WKnight, isCheck);
+							moves[numMoves++] = m;
+						}
+					}
+				}
+
+			}
+			else
+			{
+				var knights = board.pieces[(int)Piece.BKnight] & ~pinned.allPinned;
+				var wKingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing]);
+				var checkPositions = knightAttacks[wKingSquare];
+
+				while (knights != 0)
+				{
+					SquareIndex knightSquare = BitOperations.TrailingZeroCount(knights);
+					ulong knightMask = knightSquare.ToMask();
+					knights ^= knightMask;
+
+					var knightAttackPattern = knightAttacks[knightSquare] & ~board.pieces[(int)Piece.BlackAll];
+
+					knightAttackPattern &= board.pieces[(int)Piece.WhiteAll] | checkPositions;
+
+					while (knightAttackPattern != 0)
+					{
+						SquareIndex endIndex = BitOperations.TrailingZeroCount(knightAttackPattern);
+						ulong endMask = endIndex.ToMask();
+						knightAttackPattern ^= endMask;
+
+						bool isCheck = (endMask & checkPositions) != 0;
+
+						var capPiece = board.mailbox[endIndex];
+						if (capPiece != Piece.Empty)
+						{
+							Move m = Move.CreateCapture(knightSquare, endIndex, Piece.BKnight, capPiece, isCheck);
+							moves[numMoves++] = m;
+						}
+						else
+						{
+							Move m = Move.CreateQuiet(knightSquare, endIndex, Piece.BKnight, isCheck);
+							moves[numMoves++] = m;
+						}
+					}
+				}
+			}
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
+		private static void GenerateRookMoves(in BitBoard board, PinnedMap pinned, KingCheckState checkState, ulong kingCheckSquares, Span<Move> moves, ref int numMoves, Piece piece)
 		{
 			Color ownColor = piece.Color();
 			Color enemyColor = ownColor.Invert();
 			ulong occupancy = board.occupied;
 
-			var rooks = board.pieces[(int)piece];
+			var rooks = board.pieces[(int)piece] & ~pinned.diagonalPinned;
 			while (rooks != 0)
 			{
 				SquareIndex rookSquare = BitOperations.TrailingZeroCount(rooks);
@@ -724,41 +1317,55 @@ namespace ChessEngine
 				rooks ^= rookMask;
 
 				var rookPattern = Magic.RookAttacks(rookSquare, occupancy) & ~board.pieces[(int)ownColor];
+
+				//If pinned, only allow moves in allowed squares
+				if ((rookMask & pinned.straightPinned) != 0)
+				{
+					rookPattern &= pinned.pinnedAllowedStraight;
+				}
+
 				var rookAttacks = rookPattern & board.pieces[(int)enemyColor];
 				var rookQuiets = rookPattern & board.empty;
+
+				rookAttacks &= checkState.attackMap;
+				rookQuiets &= checkState.pushMap;
 
 				while (rookAttacks != 0)
 				{
 					SquareIndex endSquare = BitOperations.TrailingZeroCount(rookAttacks);
-					ulong endUInt64 = endSquare.ToMask();
-					rookAttacks ^= endUInt64;
+					ulong endMask = endSquare.ToMask();
+					rookAttacks ^= endMask;
+
+					bool isCheck = (endMask & kingCheckSquares) != 0;
 
 					Piece capPiece = board.mailbox[endSquare];
 
-					Move move = Move.CreateCapture(rookSquare, endSquare, piece, capPiece);
-					moves.Add(move);
+					Move move = Move.CreateCapture(rookSquare, endSquare, piece, capPiece, isCheck);
+					moves[numMoves++] = move;
 				}
 
 				while (rookQuiets != 0)
 				{
 					SquareIndex endSquare = BitOperations.TrailingZeroCount(rookQuiets);
-					ulong endUInt64 = endSquare.ToMask();
-					rookQuiets ^= endUInt64;
+					ulong endMask = endSquare.ToMask();
+					rookQuiets ^= endMask;
 
-					Move move = Move.CreateQuiet(rookSquare, endSquare, piece);
-					moves.Add(move);
+					bool isCheck = (endMask & kingCheckSquares) != 0;
+
+					Move move = Move.CreateQuiet(rookSquare, endSquare, piece, isCheck);
+					moves[numMoves++] = move;
 				}
 			}
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
-		private static void GenerateBishopMoves(in BitBoard board, PooledList<Move> moves, Piece piece)
+		private static void GenerateBishopMoves(in BitBoard board, PinnedMap pinned, KingCheckState checkState, ulong kingCheckSquares, Span<Move> moves, ref int numMoves, Piece piece)
 		{
 			Color ownColor = piece.Color();
 			Color enemyColor = ownColor.Invert();
 			ulong occupancy = board.occupied;
 
-			var bishops = board.pieces[(int)piece];
+			var bishops = board.pieces[(int)piece] & ~pinned.straightPinned;
 			while (bishops != 0)
 			{
 				SquareIndex bishopSquare = BitOperations.TrailingZeroCount(bishops);
@@ -766,32 +1373,340 @@ namespace ChessEngine
 				bishops ^= bishopMask;
 
 				var bishopPattern = Magic.BishopAttacks(bishopSquare, occupancy) & ~board.pieces[(int)ownColor];
+
+				//If pinned, only allow moves in allowed squares
+				if ((bishopMask & pinned.diagonalPinned) != 0)
+				{
+					bishopPattern &= pinned.pinnedAllowedDiagonal;
+				}
+
 				var bishopAttacks = bishopPattern & board.pieces[(int)enemyColor];
 				var bishopQuiets = bishopPattern & board.empty;
+
+				bishopAttacks &= checkState.attackMap;
+				bishopQuiets &= checkState.pushMap;
 
 				while (bishopAttacks != 0)
 				{
 					SquareIndex endSquare = BitOperations.TrailingZeroCount(bishopAttacks);
-					ulong endUInt64 = endSquare.ToMask();
-					bishopAttacks ^= endUInt64;
+					ulong endMask = endSquare.ToMask();
+					bishopAttacks ^= endMask;
 
 					Piece capPiece = board.mailbox[endSquare];
 
-					Move move = Move.CreateCapture(bishopSquare, endSquare, piece, capPiece);
-					moves.Add(move);
+					bool isCheck = (endMask & kingCheckSquares) != 0;
+
+					Move move = Move.CreateCapture(bishopSquare, endSquare, piece, capPiece, isCheck);
+					moves[numMoves++] = move;
 				}
 
 				while (bishopQuiets != 0)
 				{
 					SquareIndex endSquare = BitOperations.TrailingZeroCount(bishopQuiets);
-					ulong endUInt64 = endSquare.ToMask();
-					bishopQuiets ^= endUInt64;
+					ulong endMask = endSquare.ToMask();
+					bishopQuiets ^= endMask;
 
-					Move move = Move.CreateQuiet(bishopSquare, endSquare, piece);
-					moves.Add(move);
+					bool isCheck = (endMask & kingCheckSquares) != 0;
+
+					Move move = Move.CreateQuiet(bishopSquare, endSquare, piece, isCheck);
+					moves[numMoves++] = move;
 				}
 			}
 		}
 
+		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
+		private static void GenerateRookAttackAndChecks(in BitBoard board, PinnedMap pinned, ulong kingCheckSquares, Span<Move> moves, ref int numMoves, Piece piece)
+		{
+			Color ownColor = piece.Color();
+			Color enemyColor = ownColor.Invert();
+			ulong occupancy = board.occupied;
+
+			var rooks = board.pieces[(int)piece] & ~pinned.diagonalPinned;
+			while (rooks != 0)
+			{
+				SquareIndex rookSquare = BitOperations.TrailingZeroCount(rooks);
+				ulong rookMask = rookSquare.ToMask();
+				rooks ^= rookMask;
+
+				var rookPattern = Magic.RookAttacks(rookSquare, occupancy) & ~board.pieces[(int)ownColor];
+
+				//If pinned, only allow moves in allowed squares
+				if ((rookMask & pinned.straightPinned) != 0)
+				{
+					rookPattern &= pinned.pinnedAllowedStraight;
+				}
+
+				var rookAttacks = rookPattern & board.pieces[(int)enemyColor];
+				var rookQuiets = rookPattern & board.empty;
+
+				rookQuiets &= kingCheckSquares;
+
+				while (rookAttacks != 0)
+				{
+					SquareIndex endSquare = BitOperations.TrailingZeroCount(rookAttacks);
+					ulong endMask = endSquare.ToMask();
+					rookAttacks ^= endMask;
+
+					bool isCheck = (endMask & kingCheckSquares) != 0;
+
+					Piece capPiece = board.mailbox[endSquare];
+
+					Move move = Move.CreateCapture(rookSquare, endSquare, piece, capPiece, isCheck);
+					moves[numMoves++] = move;
+				}
+
+				while (rookQuiets != 0)
+				{
+					SquareIndex endSquare = BitOperations.TrailingZeroCount(rookQuiets);
+					ulong endMask = endSquare.ToMask();
+					rookQuiets ^= endMask;
+
+					Move move = Move.CreateQuiet(rookSquare, endSquare, piece, true);
+					moves[numMoves++] = move;
+				}
+			}
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
+		private static void GenerateBishopAttackAndChecks(in BitBoard board, PinnedMap pinned, ulong kingCheckSquares, Span<Move> moves, ref int numMoves, Piece piece)
+		{
+			Color ownColor = piece.Color();
+			Color enemyColor = ownColor.Invert();
+			ulong occupancy = board.occupied;
+
+			var bishops = board.pieces[(int)piece] & ~pinned.straightPinned;
+			while (bishops != 0)
+			{
+				SquareIndex bishopSquare = BitOperations.TrailingZeroCount(bishops);
+				ulong bishopMask = bishopSquare.ToMask();
+				bishops ^= bishopMask;
+
+				var bishopPattern = Magic.BishopAttacks(bishopSquare, occupancy) & ~board.pieces[(int)ownColor];
+
+				//If pinned, only allow moves in allowed squares
+				if ((bishopMask & pinned.diagonalPinned) != 0)
+				{
+					bishopPattern &= pinned.pinnedAllowedDiagonal;
+				}
+
+				var bishopAttacks = bishopPattern & board.pieces[(int)enemyColor];
+				var bishopQuiets = bishopPattern & board.empty;
+
+				bishopQuiets &= kingCheckSquares;
+
+				while (bishopAttacks != 0)
+				{
+					SquareIndex endSquare = BitOperations.TrailingZeroCount(bishopAttacks);
+					ulong endMask = endSquare.ToMask();
+					bishopAttacks ^= endMask;
+
+					bool isCheck = (endMask & kingCheckSquares) != 0;
+
+					Piece capPiece = board.mailbox[endSquare];
+
+					Move move = Move.CreateCapture(bishopSquare, endSquare, piece, capPiece, isCheck);
+					moves[numMoves++] = move;
+				}
+
+				while (bishopQuiets != 0)
+				{
+					SquareIndex endSquare = BitOperations.TrailingZeroCount(bishopQuiets);
+					ulong endMask = endSquare.ToMask();
+					bishopQuiets ^= endMask;
+
+					Move move = Move.CreateQuiet(bishopSquare, endSquare, piece, true);
+					moves[numMoves++] = move;
+				}
+			}
+		}
+
+		private static PinnedMap GeneratePinnedMap(in BitBoard board)
+		{
+			ulong straightPinned = 0;
+			ulong diagonalPinned = 0;
+
+			int selfCi = (int)board.sideToMove;
+			int oppCi = (selfCi + 1) & 1;
+			int kingSquare = BitOperations.TrailingZeroCount(board.pieces[(int)Piece.WKing + selfCi]);
+
+			ulong kingSlidingStraightMovesToOpponents = Magic.RookAttacks(kingSquare, board.pieces[oppCi]);
+			ulong kingSlidingDiagonalMovesToOpponents = Magic.BishopAttacks(kingSquare, board.pieces[oppCi]);
+
+			ulong possibleSPinners = kingSlidingStraightMovesToOpponents & board.pieces[oppCi];
+			ulong possibleDPinners = kingSlidingDiagonalMovesToOpponents & board.pieces[oppCi];
+			ulong possibleStraightPinnedPieces = Magic.RookAttacks(kingSquare, board.pieces[selfCi]) & board.pieces[selfCi];
+			ulong possibleDiagonalPinnedPieces = Magic.BishopAttacks(kingSquare, board.pieces[selfCi]) & board.pieces[selfCi];
+
+			ulong possibleStraightPinners = (board.pieces[(int)Piece.WRook + oppCi] |
+											board.pieces[(int)Piece.WQueen + oppCi]) & possibleSPinners;
+			while (possibleStraightPinners != 0)
+			{
+				SquareIndex pinnerSquare = BitOperations.TrailingZeroCount(possibleStraightPinners);
+				ulong pinnerMask = pinnerSquare.ToMask();
+				possibleStraightPinners ^= pinnerMask;
+				var pattern = Magic.RookAttacks(pinnerSquare, board.occupied);
+
+				var pinned = pattern & possibleStraightPinnedPieces;
+				straightPinned |= pinned;
+			}
+
+			ulong possibleDiagonalPinners = (board.pieces[(int)Piece.WBishop + oppCi] |
+											board.pieces[(int)Piece.WQueen + oppCi]) & possibleDPinners;
+			while (possibleDiagonalPinners != 0)
+			{
+				SquareIndex pinnerSquare = BitOperations.TrailingZeroCount(possibleDiagonalPinners);
+				ulong pinnerMask = pinnerSquare.ToMask();
+				possibleDiagonalPinners ^= pinnerMask;
+				var pattern = Magic.BishopAttacks(pinnerSquare, board.occupied);
+
+				var pinned = pattern & possibleDiagonalPinnedPieces;
+				diagonalPinned |= pinned;
+			}
+
+			return new PinnedMap()
+			{
+				allPinned = straightPinned | diagonalPinned,
+				straightPinned = straightPinned,
+				diagonalPinned = diagonalPinned,
+				pinnedAllowedStraight = kingSlidingStraightMovesToOpponents,
+				pinnedAllowedDiagonal = kingSlidingDiagonalMovesToOpponents
+			};
+		}
+
+		private static KingCheckState GenerateKingCheckState(in BitBoard board)
+		{
+			if (!board.isKingInCheck)
+			{
+				return new KingCheckState()
+				{
+					attackMap = ~0UL,
+					numAttackers = 0,
+					pushMap = ~0UL
+				};
+			}
+
+			int selfCi = (int)board.sideToMove;
+			int oppCi = (selfCi + 1) & 1;
+			ulong oppSliderAttacks = board.sideToMove == Color.White ? board.bSliderAttacks : board.wSliderAttacks;
+			ulong oppStaticAttacks = board.sideToMove == Color.White ? board.bStaticAttacks : board.wStaticAttacks;
+
+			ulong kingMask = board.pieces[(int)Piece.WKing + selfCi];
+			int kingSquare = BitOperations.TrailingZeroCount(kingMask);
+
+			ulong attackerMask = 0;
+			ulong pushMask = 0;
+
+			if ((kingMask & oppStaticAttacks) != 0)
+			{
+				if (selfCi == 0)
+				{
+					attackerMask |= MoveGenHelpers.wPawnAnyAttacks(kingMask) & board.pieces[(int)Piece.BPawn];
+				}
+				else
+				{
+					attackerMask |= MoveGenHelpers.bPawnAnyAttacks(kingMask) & board.pieces[(int)Piece.WPawn];
+				}
+
+				attackerMask |= knightAttacks[kingSquare] & board.pieces[(int)Piece.WKnight + oppCi];
+			}
+
+			if ((kingMask & oppSliderAttacks) != 0)
+			{
+				ulong kingSlidingStraightMoves = Magic.RookAttacks(kingSquare, board.occupied);
+				ulong kingSlidingDiagonalMoves = Magic.BishopAttacks(kingSquare, board.occupied);
+
+				ulong enemyStraightSliders = (board.pieces[(int)Piece.WRook + oppCi] |
+											  board.pieces[(int)Piece.WQueen + oppCi]) & kingSlidingStraightMoves;
+				ulong enemyDiagonalSliders = (board.pieces[(int)Piece.WBishop + oppCi] |
+											  board.pieces[(int)Piece.WQueen + oppCi]) & kingSlidingDiagonalMoves;
+
+				attackerMask |= enemyStraightSliders;
+				attackerMask |= enemyDiagonalSliders;
+
+				int numAttackers = BitOperations.PopCount(attackerMask);
+
+				if (numAttackers > 1) //double check
+				{
+					return new KingCheckState()
+					{
+						attackMap = attackerMask,
+						numAttackers = numAttackers,
+						pushMap = pushMask
+					};
+				}
+
+
+				if (enemyStraightSliders != 0)
+				{
+					SquareIndex sliderSquare = BitOperations.TrailingZeroCount(enemyStraightSliders);
+					var pattern = Magic.RookAttacks(sliderSquare, board.occupied);
+
+					pushMask |= pattern & kingSlidingStraightMoves;
+				}
+				else // Has to be diagonal
+				{
+					SquareIndex sliderSquare = BitOperations.TrailingZeroCount(enemyDiagonalSliders);
+					var pattern = Magic.BishopAttacks(sliderSquare, board.occupied);
+
+					pushMask |= pattern & kingSlidingDiagonalMoves;
+				}
+
+				return new KingCheckState()
+				{
+					attackMap = attackerMask,
+					numAttackers = numAttackers,
+					pushMap = pushMask
+				};
+			}
+			else
+			{
+				int numAttackers = BitOperations.PopCount(attackerMask);
+				return new KingCheckState()
+				{
+					attackMap = attackerMask,
+					numAttackers = numAttackers,
+					pushMap = 0
+				};
+			}
+		}
+
+		private static bool CheckEnPassantNotDiscoverCheck(in BitBoard board, SquareIndex startIndex,
+			SquareIndex eatenSquare)
+		{
+			ulong occupied = board.occupied;
+			int selfCi = (int)board.sideToMove;
+			int oppCi = (selfCi + 1) & 1;
+			int epRank = startIndex.Rank;
+			ulong rankMask = MoveGenHelpers.Ranks[epRank];
+			ulong ownKingMask = board.pieces[(int)Piece.WKing + selfCi];
+
+			if ((ownKingMask & rankMask) == 0) //King not in same rank as en passant
+			{
+				return true;
+			}
+			ulong enemyStraightSlidersOnSameRank = (board.pieces[(int)Piece.WRook + oppCi] |
+													board.pieces[(int)Piece.WQueen + oppCi]) & rankMask;
+
+			if (enemyStraightSlidersOnSameRank == 0) // No straight enemy sliders on same rank
+			{
+				return true;
+			}
+
+			// Remove both pieces from the board
+			occupied ^= startIndex.ToMask() | eatenSquare.ToMask();
+
+			// Rook attack from king
+			int kingSquare = BitOperations.TrailingZeroCount(ownKingMask);
+			var kingStraightSlider = Magic.RookAttacks(kingSquare, occupied);
+
+			//Discovered a slider
+			if ((kingStraightSlider & enemyStraightSlidersOnSameRank) != 0)
+			{
+				return false;
+			}
+
+			// No threat found
+			return true;
+		}
 	}
 }

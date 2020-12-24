@@ -42,7 +42,8 @@ namespace ChessEngine
 		KingCastle = (1 << 4) | Castling,
 		QueenCastle = (1 << 5) | Castling,
 		Promotion = (1 << 6),
-		PromotionCap = Capture | Promotion
+		PromotionCap = Capture | Promotion,
+		Check = (1 << 7)
 	}
 
 	public static class SquareMask {
@@ -143,13 +144,13 @@ namespace ChessEngine
 		public static implicit operator SquareIndex(byte val) => new SquareIndex(val);
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-		public ulong ToMask() {
+		public readonly ulong ToMask() {
 			return 1UL << value;
 		}
 
-		public bool IsNoneSquare => value == None;
-		public int Rank => (int)Math.Floor(value / 8.0);
-		public int File => value % 8;
+		public readonly bool IsNoneSquare => value == None;
+		public readonly int Rank => (int)Math.Floor(value / 8.0);
+		public readonly int File => value % 8;
 
 		public const int H8 = 63;
 		public const int G8 = 62;
@@ -260,23 +261,23 @@ namespace ChessEngine
 		}
 
 		[MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-		public SquareIndex MoveOne(Direction dir) {
+		public readonly SquareIndex MoveOne(Direction dir) {
 			return new SquareIndex((byte)(value + MoveGenHelpers.Shift[(int) dir]));
 		}
 		[MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-		public SquareIndex OneNorth() {
+		public readonly SquareIndex OneNorth() {
 			 return new SquareIndex((byte)(value + 8));
 		}
 		[MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-		public SquareIndex TwoNorth() {
+		public readonly SquareIndex TwoNorth() {
 			return new SquareIndex((byte)(value + 16));
 		}
 		[MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-		public SquareIndex OneSouth() {
+		public readonly SquareIndex OneSouth() {
 			 return new SquareIndex((byte)(value - 8));
 		}
 		[MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-		public SquareIndex TwoSouth() {
+		public readonly SquareIndex TwoSouth() {
 			return new SquareIndex((byte)(value - 16));
 		}
 	}
@@ -317,6 +318,23 @@ namespace ChessEngine
 
 
 public static class EnumExtensions {
+	private static int[] mvvLvaScores = new int[] {
+		0, // All
+		0,
+		100, // Pawn
+		100,
+		310, // Knight
+		310,
+		325, // Bishop
+		325,
+		450, // Rook
+		450,
+		1200, // Queen
+		1200,
+		10000, // King
+		10000, 
+		0 // Empty
+	};
 
 	public static Color Color(this Piece piece) {
 		return (Color) ((int) piece & 1);
@@ -324,6 +342,10 @@ public static class EnumExtensions {
 
 	public static Color Invert(this Color col) {
 		return (Color) (((int)col + 1) & 1);
+	}
+
+	public static int MvvLvaScore(this Piece piece) {
+		return mvvLvaScores[(int) piece];
 	}
 
 	public static string ToUtf8Piece(this Piece piece) {

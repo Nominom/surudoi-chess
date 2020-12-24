@@ -12,6 +12,12 @@ namespace ChessEngine
 
 	public struct BitBoard
 	{
+		public const byte wKingSideCastling = 0b1;
+		public const byte wQueenSideCastling = 0b10;
+		public const byte bKingSideCastling = 0b100;
+		public const byte bQueenSideCastling = 0b1000;
+
+
 		public ulong[] pieces;
 		public Piece[] mailbox;
 
@@ -28,15 +34,15 @@ namespace ChessEngine
 		public ulong wStaticAttacks;
 		public ulong bStaticAttacks;
 
-		public bool wKingSideAllowed;
-		public bool wQueenSideAllowed;
-		public bool bKingSideAllowed;
-		public bool bQueenSideAllowed;
+		public byte castling;
+		public ulong hash;
 
 		public Color sideToMove;
 		public SquareIndex enPassantTargetSquare;
 		public int halfMovesSinceCapOrPawn;
 		public int fullMoveNum;
+		public bool isKingInCheck;
+
 
 		[MethodImpl(MethodImplOptions.AggressiveOptimization)]
 		public UnMove MakeMove(Move move)
@@ -44,17 +50,22 @@ namespace ChessEngine
 			UnMove unMove = new UnMove()
 			{
 				move = move,
-				wKingSideAllowed = wKingSideAllowed,
-				wQueenSideAllowed = wQueenSideAllowed,
-				bKingSideAllowed = bKingSideAllowed,
-				bQueenSideAllowed = bQueenSideAllowed,
+				castling = castling,
 				enPassantTargetSquare = enPassantTargetSquare,
 				halfMovesSinceCapOrPawn = halfMovesSinceCapOrPawn,
 				wStaticAttacks = wStaticAttacks,
 				wSliderAttacks = wSliderAttacks,
 				bStaticAttacks = bStaticAttacks,
-				bSliderAttacks = bSliderAttacks
+				bSliderAttacks = bSliderAttacks,
+				hash = hash
 			};
+
+			// Clear en passant square
+			if (!enPassantTargetSquare.IsNoneSquare) {
+				hash ^= Zorbrist.enPassantTable[enPassantTargetSquare & 0b111];
+			}
+
+			hash ^= Zorbrist.castlingTable[castling];
 
 			int cI = (int)sideToMove; // color index
 			int ocI = (cI + 1) & 1; // opponent color index
@@ -71,12 +82,17 @@ namespace ChessEngine
 			ulong endMask = move.GetEndSquareMask();
 			ulong bothMask = startMask | endMask;
 
+			int startIdx = move.startSquareIdx.value;
+			int endIdx = move.endSquareIdx.value;
+
 			pieces[(int)move.piece] ^= bothMask;
 			pieces[(int)move.GetColor()] ^= bothMask;
 			occupied ^= bothMask;
 			empty ^= bothMask;
-			mailbox[move.startSquareIdx] = Piece.Empty;
-			mailbox[move.endSquareIdx] = move.piece;
+			mailbox[startIdx] = Piece.Empty;
+			mailbox[endIdx] = move.piece;
+			hash ^= Zorbrist.squarePieceTable[(int) move.piece * 64 + startIdx];
+			hash ^= Zorbrist.squarePieceTable[(int) move.piece * 64 + endIdx];
 
 			if (move.IsEnPassant())
 			{
@@ -88,12 +104,15 @@ namespace ChessEngine
 				occupied ^= enPassantMask;
 				empty ^= enPassantMask;
 				mailbox[eatenSquare] = Piece.Empty;
+				hash ^= Zorbrist.squarePieceTable[(int) move.cPiece * 64 + eatenSquare];
 			}
 			else if (move.IsPromotion())
 			{
 				pieces[(int)move.piece] ^= endMask;
 				pieces[(int)move.promoteTo] ^= endMask;
 				mailbox[move.endSquareIdx] = move.promoteTo;
+				hash ^= Zorbrist.squarePieceTable[(int) move.piece * 64 + endIdx];
+				hash ^= Zorbrist.squarePieceTable[(int) move.promoteTo * 64 + endIdx];
 			}
 			if (move.IsCapture())
 			{
@@ -102,6 +121,7 @@ namespace ChessEngine
 				occupied ^= endMask;
 				empty ^= endMask;
 				halfMovesSinceCapOrPawn = 0;
+				hash ^= Zorbrist.squarePieceTable[(int) move.cPiece * 64 + endIdx];
 			}
 			if (move.IsCastling())
 			{
@@ -116,6 +136,8 @@ namespace ChessEngine
 						empty ^= rookMask;
 						mailbox[SquareIndex.H1] = Piece.Empty;
 						mailbox[SquareIndex.F1] = Piece.WRook;
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.WRook * 64 + SquareIndex.H1];
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.WRook * 64 + SquareIndex.F1];
 					}
 					else
 					{
@@ -126,6 +148,8 @@ namespace ChessEngine
 						empty ^= rookMask;
 						mailbox[SquareIndex.H8] = Piece.Empty;
 						mailbox[SquareIndex.F8] = Piece.BRook;
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.BRook * 64 + SquareIndex.H8];
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.BRook * 64 + SquareIndex.F8];
 					}
 				}
 				else
@@ -139,6 +163,8 @@ namespace ChessEngine
 						empty ^= rookMask;
 						mailbox[SquareIndex.A1] = Piece.Empty;
 						mailbox[SquareIndex.D1] = Piece.WRook;
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.WRook * 64 + SquareIndex.A1];
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.WRook * 64 + SquareIndex.D1];
 					}
 					else
 					{
@@ -149,6 +175,8 @@ namespace ChessEngine
 						empty ^= rookMask;
 						mailbox[SquareIndex.A8] = Piece.Empty;
 						mailbox[SquareIndex.D8] = Piece.BRook;
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.BRook * 64 + SquareIndex.A8];
+						hash ^= Zorbrist.squarePieceTable[(int) Piece.BRook * 64 + SquareIndex.D8];
 					}
 				}
 			}
@@ -165,27 +193,32 @@ namespace ChessEngine
 				int file = move.startSquareIdx.File;
 
 				enPassantTargetSquare = new SquareIndex((startRank + endRank) / 2, file);
+				hash ^= Zorbrist.enPassantTable[enPassantTargetSquare & 0b111];
 			}
 			else
 			{
 				enPassantTargetSquare = SquareIndex.None;
 			}
 
-			wKingSideAllowed = wKingSideAllowed && (bothMask.None(SquareMask.WKingCastlingSquares));
-			wQueenSideAllowed = wQueenSideAllowed && (bothMask.None(SquareMask.WQueenCastlingSquares));
-			bKingSideAllowed = bKingSideAllowed && (bothMask.None(SquareMask.BKingCastlingSquares));
-			bQueenSideAllowed = bQueenSideAllowed && (bothMask.None(SquareMask.BQueenCastlingSquares));
+			if (castling != 0) {
+				castling &= (byte)(~(bothMask.None(SquareMask.WKingCastlingSquares) ? 0 : wKingSideCastling));
+				castling &= (byte)(~(bothMask.None(SquareMask.WQueenCastlingSquares) ? 0 : wQueenSideCastling));
+				castling &= (byte)(~(bothMask.None(SquareMask.BKingCastlingSquares) ? 0 : bKingSideCastling));
+				castling &= (byte)(~(bothMask.None(SquareMask.BQueenCastlingSquares) ? 0 : bQueenSideCastling));
+			}
+
+			hash ^= Zorbrist.castlingTable[castling];
 
 			if (sideToMove == Color.White)
 			{
 				bool rebuildSelfStatics = (startMask & selfStatics) > 0;
-				bool rebuildSelfSliders = ((startMask & selfSliders) | 
-				                           (bothMask & wSliderAttacks)) > 0 || 
-				                          (move.moveType & (MoveType.Castling | MoveType.Promotion)) != 0;
+				bool rebuildSelfSliders = ((startMask & selfSliders) |
+										   (bothMask & wSliderAttacks)) > 0 ||
+										  (move.moveType & (MoveType.Castling | MoveType.Promotion | MoveType.EnPassant)) != 0;
 
 				bool rebuildOppStatics = (endMask & oppStatics) > 0 || (move.moveType & MoveType.EnPassant) != 0;
 				bool rebuildOppSliders = ((endMask & oppSliders) |
-										   (bothMask & bSliderAttacks)) > 0;
+										   (bothMask & bSliderAttacks)) > 0 || (move.moveType & MoveType.EnPassant) != 0;
 
 				if (rebuildSelfStatics) wStaticAttacks = MoveGen.GenerateWhiteStaticAttackMaps(this);
 				if (rebuildSelfSliders) wSliderAttacks = MoveGen.GenerateWhiteSliderAttackMaps(this);
@@ -195,12 +228,12 @@ namespace ChessEngine
 			else
 			{
 				bool rebuildSelfStatics = (startMask & selfStatics) > 0;
-				bool rebuildSelfSliders = ((startMask & selfSliders) | 
-				                           (bothMask & bSliderAttacks)) > 0 || 
-				                          (move.moveType & (MoveType.Castling | MoveType.Promotion)) != 0;
+				bool rebuildSelfSliders = ((startMask & selfSliders) |
+										   (bothMask & bSliderAttacks)) > 0 ||
+										  (move.moveType & (MoveType.Castling | MoveType.Promotion | MoveType.EnPassant)) != 0;
 				bool rebuildOppStatics = (endMask & oppStatics) > 0 || (move.moveType & MoveType.EnPassant) != 0;
 				bool rebuildOppSliders = ((endMask & oppSliders) |
-										  (bothMask & wSliderAttacks)) > 0;
+										  (bothMask & wSliderAttacks)) > 0 || (move.moveType & MoveType.EnPassant) != 0;
 
 				if (rebuildSelfStatics) bStaticAttacks = MoveGen.GenerateBlackStaticAttackMaps(this);
 				if (rebuildSelfSliders) bSliderAttacks = MoveGen.GenerateBlackSliderAttackMaps(this);
@@ -225,18 +258,15 @@ namespace ChessEngine
 			fullMoveNum += (int)sideToMove; // Increment full move num if changing from black to white
 			sideToMove = (Color)(((int)sideToMove + 1) & 1); // Change side to Move
 
+			hash ^= Zorbrist.sideToMove;
 
-			if (sideToMove == Color.White && wAttacks.Any(pieces[(int)Piece.BKing]))
+			if (sideToMove == Color.White)
 			{
-				unMove.wasLegal = false;
-			}
-			else if (sideToMove == Color.Black && bAttacks.Any(pieces[(int)Piece.WKing]))
-			{
-				unMove.wasLegal = false;
+				isKingInCheck = (pieces[(int) Piece.WKing] & bAttacks) != 0;
 			}
 			else
 			{
-				unMove.wasLegal = true;
+				isKingInCheck = (pieces[(int) Piece.BKing] & wAttacks) != 0;
 			}
 
 			return unMove;
@@ -247,12 +277,10 @@ namespace ChessEngine
 		{
 			Move move = unMove.move;
 
-			wKingSideAllowed = unMove.wKingSideAllowed;
-			wQueenSideAllowed = unMove.wQueenSideAllowed;
-			bKingSideAllowed = unMove.bKingSideAllowed;
-			bQueenSideAllowed = unMove.bQueenSideAllowed;
+			castling = unMove.castling;
 			halfMovesSinceCapOrPawn = unMove.halfMovesSinceCapOrPawn;
 			enPassantTargetSquare = unMove.enPassantTargetSquare;
+			hash = unMove.hash;
 
 			wStaticAttacks = unMove.wStaticAttacks;
 			wSliderAttacks = unMove.wSliderAttacks;
@@ -347,10 +375,8 @@ namespace ChessEngine
 			empty ^= bothMask;
 			mailbox[move.startSquareIdx] = move.piece;
 
-
 			sideToMove = (Color)(((int)sideToMove + 1) & 1); // Change side to Move
 			fullMoveNum -= (int)sideToMove; // Increment full move num if changed from white to black
-
 		}
 
 		public string ToFen()
@@ -454,22 +480,22 @@ namespace ChessEngine
 
 			ss += sideToMove == Color.White ? " w" : " b";
 
-			if (wKingSideAllowed || wQueenSideAllowed || bKingSideAllowed || bQueenSideAllowed)
+			if (castling != 0)
 			{
 				ss += " ";
-				if (wKingSideAllowed)
+				if ((castling & wKingSideCastling) != 0)
 				{
 					ss += 'K';
 				}
-				if (wQueenSideAllowed)
+				if ((castling & wQueenSideCastling) != 0)
 				{
 					ss += 'Q';
 				}
-				if (bKingSideAllowed)
+				if ((castling & bKingSideCastling) != 0)
 				{
 					ss += 'k';
 				}
-				if (bQueenSideAllowed)
+				if ((castling & bQueenSideCastling) != 0)
 				{
 					ss += 'q';
 				}
@@ -580,46 +606,37 @@ namespace ChessEngine
 
 			b.sideToMove = fenParts[1] == "w" ? Color.White : Color.Black;
 
-			if (fenParts.Length == 6)
+			string castlings = fenParts[2];
+
+			b.castling = 0;
+			b.castling |= castlings.Contains('K') ? wKingSideCastling : (byte)0;
+			b.castling |= castlings.Contains('Q') ? wQueenSideCastling : (byte)0;
+			b.castling |= castlings.Contains('k') ? bKingSideCastling : (byte)0;
+			b.castling |= castlings.Contains('q') ? bQueenSideCastling : (byte)0;
+
+			if (fenParts[3] == "-")
 			{
-				string castlings = fenParts[2];
-
-				b.wKingSideAllowed = castlings.Contains('K');
-				b.wQueenSideAllowed = castlings.Contains('Q');
-				b.bKingSideAllowed = castlings.Contains('k');
-				b.bQueenSideAllowed = castlings.Contains('q');
-
-				if (fenParts[3] == "-")
-				{
-					b.enPassantTargetSquare = SquareIndex.None;
-				}
-				else
-				{
-					b.enPassantTargetSquare = SquareIndex.Parse(fenParts[3]);
-				}
-
-				b.halfMovesSinceCapOrPawn = int.Parse(fenParts[4]);
-				b.fullMoveNum = int.Parse(fenParts[5]);
+				b.enPassantTargetSquare = SquareIndex.None;
 			}
-			else if (fenParts.Length == 5)
+			else
 			{
-				if (fenParts[2] == "-")
-				{
-					b.enPassantTargetSquare = SquareIndex.None;
-				}
-				else
-				{
-					b.enPassantTargetSquare = SquareIndex.Parse(fenParts[2]);
-				}
-
-				b.halfMovesSinceCapOrPawn = int.Parse(fenParts[3]);
-				b.fullMoveNum = int.Parse(fenParts[4]);
+				b.enPassantTargetSquare = SquareIndex.Parse(fenParts[3]);
 			}
 
-			b.RebuildMailbox();
+			b.halfMovesSinceCapOrPawn = int.Parse(fenParts[4]);
+			b.fullMoveNum = int.Parse(fenParts[5]);
+
+			b.RebuildMailboxAndHash();
 
 			(b.wAttacks, b.wStaticAttacks, b.wSliderAttacks) = MoveGen.GenerateWhiteAttackMaps(b);
 			(b.bAttacks, b.bStaticAttacks, b.bSliderAttacks) = MoveGen.GenerateBlackAttackMaps(b);
+
+			if (b.sideToMove == Color.White) {
+				b.isKingInCheck = (b.pieces[(int) Piece.WKing] & b.bAttacks) != 0;
+			}
+			else {
+				b.isKingInCheck = (b.pieces[(int) Piece.BKing] & b.wAttacks) != 0;
+			}
 
 			return b;
 		}
@@ -647,10 +664,7 @@ namespace ChessEngine
 			b.pieces[(int)Piece.WKing] = SquareMask.E1;
 			b.pieces[(int)Piece.BKing] = SquareMask.E8;
 
-			b.wKingSideAllowed = true;
-			b.wQueenSideAllowed = true;
-			b.bKingSideAllowed = true;
-			b.bQueenSideAllowed = true;
+			b.castling = 0xF;
 
 			b.sideToMove = Color.White;
 
@@ -679,14 +693,17 @@ namespace ChessEngine
 			b.halfMovesSinceCapOrPawn = 0;
 			b.fullMoveNum = 1;
 			b.enPassantTargetSquare = SquareIndex.None;
-			b.RebuildMailbox();
+
+			b.RebuildMailboxAndHash();
 
 			(b.wAttacks, b.wStaticAttacks, b.wSliderAttacks) = MoveGen.GenerateWhiteAttackMaps(b);
 			(b.bAttacks, b.bStaticAttacks, b.bSliderAttacks) = MoveGen.GenerateBlackAttackMaps(b);
 
+			b.isKingInCheck = false;
+
 			return b;
 		}
-		private void RebuildMailbox()
+		private void RebuildMailboxAndHash()
 		{
 			for (int i = 0; i < 64; i++)
 			{
@@ -708,6 +725,8 @@ namespace ChessEngine
 					mailbox[i] = Piece.Empty;
 				}
 			}
+
+			hash = Zorbrist.Rebuild(this);
 		}
 		public bool CheckState()
 		{
@@ -799,6 +818,8 @@ namespace ChessEngine
 			if (expectedCountBlackPieces != countBlackPieces) return false;
 			if (expectedCountWhitePieces + expectedCountBlackPieces != expectedCountAllPieces) return false;
 
+			if (hash != Zorbrist.Rebuild(this)) return false;
+
 			return true;
 		}
 
@@ -806,12 +827,15 @@ namespace ChessEngine
 		{
 			BitBoard board = new BitBoard()
 			{
+				wSliderAttacks = wSliderAttacks,
+				wStaticAttacks = wStaticAttacks,
+				bSliderAttacks = bSliderAttacks,
+				bStaticAttacks = bStaticAttacks,
+				isKingInCheck = isKingInCheck,
 				wAttacks = wAttacks,
 				bAttacks = bAttacks,
-				bKingSideAllowed = bKingSideAllowed,
-				bQueenSideAllowed = bQueenSideAllowed,
-				wKingSideAllowed = wKingSideAllowed,
-				wQueenSideAllowed = wQueenSideAllowed,
+				castling = castling,
+				hash = hash,
 				empty = empty,
 				occupied = occupied,
 				enPassantTargetSquare = enPassantTargetSquare,
@@ -827,39 +851,57 @@ namespace ChessEngine
 			return board;
 		}
 
-		public ulong Perft(int depth)
+
+		private ulong Perft(int depth, PerftHashTable hashTable)
 		{
 			ulong nodes = 0;
 
 			if (depth == 0)
 				return 1UL;
 
-			var moves = MoveGen.GeneratePseudoLegalMoves(this);
+			if (hashTable.TryLoad(hash, depth, out nodes)) {
+				return nodes;
+			}
 
-			for (int i = 0; i < moves.Count; i++)
+			Span<Move> moves = stackalloc Move[218];
+			int count = MoveGen.GenerateLegalMoves(this, moves);
+
+			if (depth == 1)
+				return (ulong)count;
+
+			for (int i = 0; i < count; i++)
 			{
 				var unMove = MakeMove(moves[i]);
-				if (unMove.wasLegal)
-					nodes += Perft(depth - 1);
+#if DEBUG
+				if(!IsValid) throw new Exception("Board state is not valid!");
+#endif
+				nodes += Perft(depth - 1, hashTable);
+
 				UnMakeMove(unMove);
 			}
+
+			hashTable.SaveItem(hash, depth, nodes);
+
 			return nodes;
 		}
 
-		public IEnumerable<(Move, ulong)> PerftList(int depth)
-		{
-			var moves = MoveGen.GeneratePseudoLegalMoves(this);
+		public IEnumerable<(Move, ulong)> PerftList(int depth) {
+			PerftHashTable hashTable = new PerftHashTable();
+			var moves = MoveGen.GenerateMoveList(this);
 
 			for (int i = 0; i < moves.Count; i++)
 			{
 				var unMove = MakeMove(moves[i]);
-				if (unMove.wasLegal)
-				{
-					ulong nodes = Perft(depth - 1);
-					yield return (moves[i], nodes);
-				}
+				ulong nodes = Perft(depth - 1, hashTable);
+				yield return (moves[i], nodes);
 				UnMakeMove(unMove);
 			}
+		}
+
+		public bool IsInMate() {
+			if (sideToMove == Color.White && wAttacks.Any(pieces[(int) Piece.BKing])) return true;
+			if (sideToMove == Color.Black && bAttacks.Any(pieces[(int) Piece.WKing])) return true;
+			return false;
 		}
 	}
 
